@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="297mm" height="210mm" viewBox="0 0 297 210">
+  <title>Chessboard calibration target, 9x6 squares, 30mm square size</title>
+  <desc>
+    A4 landscape calibration target for OpenCV chessboard detection.
+    Board size: 9 squares by 6 squares.
+    Inner corners: 8 by 5.
+    Square size: 30mm.
+    Use stereo_calibrate.py with: --pattern chessboard --pattern-size 8x5 --square-size 30
+  </desc>
+  <rect x="0" y="0" width="297" height="210" fill="white"/>
+  <g id="chessboard" transform="translate(13.5 15)">
+    <rect x="0" y="0" width="270" height="180" fill="white"/>
+    <rect x="0" y="0" width="270" height="180" fill="none" stroke="black" stroke-width="0.2"/>
+    <rect x="0" y="0" width="30" height="30" fill="black"/>
+    <rect x="60" y="0" width="30" height="30" fill="black"/>
+    <rect x="120" y="0" width="30" height="30" fill="black"/>
+    <rect x="180" y="0" width="30" height="30" fill="black"/>
+    <rect x="240" y="0" width="30" height="30" fill="black"/>
+    <rect x="30" y="30" width="30" height="30" fill="black"/>
+    <rect x="90" y="30" width="30" height="30" fill="black"/>
+    <rect x="150" y="30" width="30" height="30" fill="black"/>
+    <rect x="210" y="30" width="30" height="30" fill="black"/>
+    <rect x="0" y="60" width="30" height="30" fill="black"/>
+    <rect x="60" y="60" width="30" height="30" fill="black"/>
+    <rect x="120" y="60" width="30" height="30" fill="black"/>
+    <rect x="180" y="60" width="30" height="30" fill="black"/>
+    <rect x="240" y="60" width="30" height="30" fill="black"/>
+    <rect x="30" y="90" width="30" height="30" fill="black"/>
+    <rect x="90" y="90" width="30" height="30" fill="black"/>
+    <rect x="150" y="90" width="30" height="30" fill="black"/>
+    <rect x="210" y="90" width="30" height="30" fill="black"/>
+    <rect x="0" y="120" width="30" height="30" fill="black"/>
+    <rect x="60" y="120" width="30" height="30" fill="black"/>
+    <rect x="120" y="120" width="30" height="30" fill="black"/>
+    <rect x="180" y="120" width="30" height="30" fill="black"/>
+    <rect x="240" y="120" width="30" height="30" fill="black"/>
+    <rect x="30" y="150" width="30" height="30" fill="black"/>
+    <rect x="90" y="150" width="30" height="30" fill="black"/>
+    <rect x="150" y="150" width="30" height="30" fill="black"/>
+    <rect x="210" y="150" width="30" height="30" fill="black"/>
+  </g>
+</svg>
