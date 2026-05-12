@@ -63,6 +63,20 @@ uv run python stereo_calibrate.py --pattern chessboard --pattern-size 8x5 --squa
 
 `--square-size` はデフォルトではミリメートルとして扱い、dv-processing の depth geometry 用に内部でメートルへ変換します。最初からメートルで指定したい場合は `--square-size-scale-to-meters 1.0` を追加してください。
 
+検出が重くて画面更新が遅い場合は、まず標準 detector と縮小検出を使ってください。これがデフォルトです。
+
+```bash
+uv run python stereo_calibrate.py \
+  --pattern chessboard \
+  --pattern-size 8x5 \
+  --square-size 30
+```
+
+標準 detector で検出できない場合だけ、遅くなりますが `--detector sb` または `--detector both` を試してください。
+まだ重い場合は、`--detection-scale 0.5` や `--detection-interval-ms 500` のように検出解像度と検出頻度を下げてください。反対に、チェスボードが小さく写っていて反応しない場合は `--detection-scale 1.0` のまま使い、ボードを大きく写してください。
+
+キャリブレーションでは polarity を使う設定がデフォルトです。必要な場合だけ `--ignore-polarity` で正負イベントを同一扱いにできます。
+
 SVG を印刷するときは、100% スケールで印刷し、`fit to page` や「用紙に合わせる」設定は無効にしてください。
 
 このスクリプトは DV-GUI のキャリブレーションと同じ考え方で動きます。

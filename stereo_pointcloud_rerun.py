@@ -8,10 +8,12 @@ import dv_processing as dv
 import numpy as np
 
 from stereo_common import (
+    add_camera_selection_args,
     add_slicer_args,
     cameras_are_running,
+    load_stereo_calibration,
     next_stereo_events,
-    open_stereo_cameras_from_calibration,
+    open_stereo_cameras,
     slicer_interval,
 )
 
@@ -21,12 +23,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--left-designation", default="C0")
     parser.add_argument("--right-designation", default="C1")
+    add_camera_selection_args(parser)
     add_slicer_args(parser)
     parser.add_argument("--event-count", type=int, help="Overlapping event buffer size per camera.")
     parser.add_argument("--max-points", type=int, default=120_000)
     parser.add_argument("--min-disparity", type=float, default=1.0)
     parser.add_argument("--max-depth-m", type=float, default=5.0)
     parser.add_argument("--point-radius", type=float, default=0.003)
+    parser.add_argument("--stats-interval", type=int, default=30, help="Print disparity/point-cloud stats every N frames.")
     parser.add_argument("--connect", action="store_true", help="Connect to an already running Rerun viewer.")
     parser.add_argument("--save-rrd", type=Path, help="Write a Rerun recording instead of spawning a viewer.")
     return parser.parse_args()
@@ -64,6 +68,32 @@ def disparity_preview(disparity: np.ndarray, min_disparity: float) -> np.ndarray
     colored = cv.applyColorMap(preview, cv.COLORMAP_JET)
     colored[~valid] = 0
     return cv.cvtColor(colored, cv.COLOR_BGR2RGB)
+
+
+def disparity_stats(disparity: np.ndarray, *, min_disparity: float, max_depth_m: float, stereo_geometry) -> dict:
+    disparity_px = np.asarray(disparity, dtype=np.float32) / 16.0
+    positive = disparity_px > 0.0
+    above_min = disparity_px > min_disparity
+    stats = {
+        "positive": int(np.count_nonzero(positive)),
+        "above_min": int(np.count_nonzero(above_min)),
+        "total": int(disparity_px.size),
+    }
+    if np.any(positive):
+        values = disparity_px[positive]
+        stats["disp_min"] = float(values.min())
+        stats["disp_mean"] = float(values.mean())
+        stats["disp_max"] = float(values.max())
+    if np.any(above_min):
+        focal_baseline_mm = float(stereo_geometry.convertDisparityToDepth(1.0))
+        depth_m = (focal_baseline_mm / disparity_px[above_min]) / 1000.0
+        depth_m = depth_m[np.isfinite(depth_m) & (depth_m > 0.0)]
+        if len(depth_m) > 0:
+            stats["depth_min_m"] = float(depth_m.min())
+            stats["depth_mean_m"] = float(depth_m.mean())
+            stats["depth_max_m"] = float(depth_m.max())
+            stats["within_depth"] = int(np.count_nonzero(depth_m <= max_depth_m))
+    return stats
 
 
 def pointcloud_from_disparity(
@@ -117,10 +147,14 @@ def main() -> None:
     args = parse_args()
     rr = init_rerun(args)
 
-    pair, calibration = open_stereo_cameras_from_calibration(
+    calibration = load_stereo_calibration(
         args.calibration,
         args.left_designation,
         args.right_designation,
+    )
+    pair = open_stereo_cameras(
+        args.left or calibration.left.name,
+        args.right or calibration.right.name,
     )
     stereo_geometry = dv.camera.StereoGeometry(calibration.left, calibration.right)
     matcher = dv.SemiDenseStereoMatcher(stereo_geometry)
@@ -164,6 +198,26 @@ def main() -> None:
         rr.log("stereo/disparity", rr.Image(disparity_preview(disparity, args.min_disparity)))
         if len(points) > 0:
             rr.log("stereo/pointcloud", rr.Points3D(points, colors=colors, radii=args.point_radius))
+        else:
+            rr.log("stereo/pointcloud", rr.Clear(recursive=False))
+        if args.stats_interval > 0 and frame_index % args.stats_interval == 0:
+            stats = disparity_stats(
+                disparity,
+                min_disparity=args.min_disparity,
+                max_depth_m=args.max_depth_m,
+                stereo_geometry=stereo_geometry,
+            )
+            print(
+                "frame={frame} left_events={left_events} right_events={right_events} "
+                "positive_disp={positive}/{total} above_min={above_min} points={points} stats={stats}".format(
+                    frame=frame_index,
+                    left_events=len(left_buffer),
+                    right_events=len(right_buffer),
+                    points=len(points),
+                    **stats,
+                    stats=stats,
+                )
+            )
         frame_index += 1
 
     slicer.doEveryTimeInterval(slicer_interval(args), callback)

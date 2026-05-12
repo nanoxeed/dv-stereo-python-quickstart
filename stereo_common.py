@@ -30,13 +30,16 @@ def add_camera_selection_args(parser) -> None:
     parser.add_argument("--right", help="Right camera discovery index or camera name.")
 
 
-def add_accumulator_args(parser, *, default_kind: str = "edge") -> None:
+def add_accumulator_args(parser, *, default_kind: str = "edge", default_ignore_polarity: bool = True) -> None:
     parser.add_argument("--accumulator", choices=("edge", "generic"), default=default_kind)
     parser.add_argument("--contribution", type=float, default=0.25)
     parser.add_argument("--decay", type=float, default=1.0)
     parser.add_argument("--neutral", type=float, default=0.0)
-    parser.add_argument("--ignore-polarity", action="store_true", default=True)
-    parser.add_argument("--use-polarity", action="store_false", dest="ignore_polarity")
+    if default_ignore_polarity:
+        parser.add_argument("--ignore-polarity", action="store_true", default=True)
+        parser.add_argument("--use-polarity", action="store_false", dest="ignore_polarity")
+    else:
+        parser.add_argument("--ignore-polarity", action="store_true", default=False)
     parser.add_argument("--generic-decay", choices=("none", "linear", "exponential", "step"), default="exponential")
     parser.add_argument("--min-potential", type=float, default=0.0)
     parser.add_argument("--max-potential", type=float, default=1.0)
@@ -60,7 +63,12 @@ def open_stereo_cameras(left_selector: str | None = None, right_selector: str | 
             if len(cameras) <= index:
                 raise RuntimeError(f"Camera index {index} was requested, but only {len(cameras)} cameras were found")
             return dv.io.camera.openSync(cameras[index])
-        return dv.io.camera.openSync(selector)
+        try:
+            return dv.io.camera.openSync(selector)
+        except RuntimeError:
+            if "_" in selector:
+                return dv.io.camera.openSync(selector.rsplit("_", 1)[-1])
+            raise
 
     left = open_selected(left_selector, 0)
     right = open_selected(right_selector, 1)

@@ -28,6 +28,9 @@ from stereo_common import (
 )
 
 
+MIN_CALIBRATION_SAMPLES = 3
+
+
 @dataclass
 class CalibrationSample:
     object_points: np.ndarray
@@ -52,8 +55,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Calibrate synchronized stereo event cameras from accumulated images.")
     add_camera_selection_args(parser)
     add_slicer_args(parser)
-    add_accumulator_args(parser, default_kind="generic")
-    parser.set_defaults(contribution=0.05, decay=1.0e6, generic_decay="exponential", max_potential=0.3)
+    add_accumulator_args(parser, default_kind="generic", default_ignore_polarity=False)
+    parser.set_defaults(
+        contribution=0.03,
+        decay=300000.0,
+        generic_decay="exponential",
+        ignore_polarity=False,
+        min_potential=-0.3,
+        neutral=0.0,
+        max_potential=0.3,
+    )
     parser.add_argument("--pattern", choices=("chessboard", "circles", "asymmetric-circles"), default="chessboard")
     parser.add_argument(
         "--pattern-size",
@@ -71,6 +82,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-detections", type=int, default=20)
     parser.add_argument("--consecutive-detections", type=int, default=3)
     parser.add_argument("--sample-cooldown-sec", type=float, default=0.35)
+    parser.add_argument(
+        "--detector",
+        choices=("standard", "sb", "both"),
+        default="standard",
+        help="Chessboard detector. 'standard' is faster; 'sb' can be robust but much slower.",
+    )
+    parser.add_argument(
+        "--detection-scale",
+        type=float,
+        default=1.0,
+        help="Resize factor used only for pattern detection. Use 1.0 for full-resolution detection.",
+    )
+    parser.add_argument(
+        "--detection-interval-ms",
+        type=int,
+        default=300,
+        help="Run pattern detection at this real-time interval instead of every displayed slice.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("calibration"))
     parser.add_argument("--save-images", action="store_true")
     parser.add_argument("--no-review", action="store_true")
@@ -102,38 +131,78 @@ def make_object_points(pattern: str, pattern_size: tuple[int, int], square_size:
     return points
 
 
+def detection_image(image: np.ndarray, scale: float) -> np.ndarray:
+    gray = ensure_gray(image)
+    if scale <= 0.0:
+        raise ValueError("--detection-scale must be positive")
+    if scale == 1.0:
+        return gray
+    width = max(1, int(round(gray.shape[1] * scale)))
+    height = max(1, int(round(gray.shape[0] * scale)))
+    return cv.resize(gray, (width, height), interpolation=cv.INTER_AREA)
+
+
 def candidate_images(image: np.ndarray) -> list[np.ndarray]:
     gray = ensure_gray(image)
     candidates = [gray]
     if gray.dtype == np.uint8:
         equalized = cv.equalizeHist(gray)
-        candidates.extend([equalized, cv.bitwise_not(gray), cv.bitwise_not(equalized)])
+        candidates.extend([equalized, cv.bitwise_not(equalized)])
     return candidates
 
 
-def detect_pattern(image: np.ndarray, pattern: str, pattern_size: tuple[int, int]):
-    if pattern == "chessboard":
-        sb_flags = cv.CALIB_CB_EXHAUSTIVE | cv.CALIB_CB_ACCURACY | cv.CALIB_CB_NORMALIZE_IMAGE
-        for candidate in candidate_images(image):
+def rescale_points(points: np.ndarray, scale: float) -> np.ndarray:
+    if scale == 1.0:
+        return points.astype(np.float32)
+    return (points / scale).astype(np.float32)
+
+
+def detect_chessboard(
+    image: np.ndarray,
+    pattern_size: tuple[int, int],
+    *,
+    detector: str,
+    detection_scale: float,
+):
+    scaled = detection_image(image, detection_scale)
+    standard_flags = cv.CALIB_CB_ADAPTIVE_THRESH | cv.CALIB_CB_NORMALIZE_IMAGE | cv.CALIB_CB_FAST_CHECK
+    refine_criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 40, 0.001)
+
+    if detector in ("standard", "both"):
+        for candidate in candidate_images(scaled):
+            ok, corners = cv.findChessboardCorners(candidate, pattern_size, standard_flags)
+            if ok:
+                corners = cv.cornerSubPix(candidate, corners, (5, 5), (-1, -1), refine_criteria)
+                return True, rescale_points(corners, detection_scale)
+
+    if detector in ("sb", "both"):
+        sb_flags = cv.CALIB_CB_NORMALIZE_IMAGE
+        for candidate in candidate_images(scaled):
             ok, corners = cv.findChessboardCornersSB(candidate, pattern_size, sb_flags)
             if ok:
-                return True, corners.astype(np.float32)
+                return True, rescale_points(corners, detection_scale)
 
-        fallback_flags = cv.CALIB_CB_ADAPTIVE_THRESH | cv.CALIB_CB_NORMALIZE_IMAGE
-        criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 40, 0.001)
-        for candidate in candidate_images(image):
-            ok, corners = cv.findChessboardCorners(candidate, pattern_size, fallback_flags)
-            if ok:
-                corners = cv.cornerSubPix(candidate, corners, (5, 5), (-1, -1), criteria)
-                return True, corners.astype(np.float32)
-        return False, None
+    return False, None
 
+
+def detect_pattern(
+    image: np.ndarray,
+    pattern: str,
+    pattern_size: tuple[int, int],
+    *,
+    detector: str = "standard",
+    detection_scale: float = 1.0,
+):
+    if pattern == "chessboard":
+        return detect_chessboard(image, pattern_size, detector=detector, detection_scale=detection_scale)
+
+    scaled = detection_image(image, detection_scale)
     flags = cv.CALIB_CB_SYMMETRIC_GRID if pattern == "circles" else cv.CALIB_CB_ASYMMETRIC_GRID
     flags |= cv.CALIB_CB_CLUSTERING
-    for candidate in candidate_images(image):
+    for candidate in candidate_images(scaled):
         ok, centers = cv.findCirclesGrid(candidate, pattern_size, flags=flags)
         if ok:
-            return True, centers.astype(np.float32)
+            return True, rescale_points(centers, detection_scale)
     return False, None
 
 
@@ -160,7 +229,13 @@ def overlay_coverage(image: np.ndarray, coverage: np.ndarray) -> np.ndarray:
 
 def review_samples(samples: list[CalibrationSample], pattern_size: tuple[int, int]) -> list[CalibrationSample]:
     kept: list[CalibrationSample] = []
+    print("Review calibration samples:")
+    print("  space / k / enter : keep the current sample")
+    print("  d                 : discard the current sample")
+    print("  esc               : stop review")
+    print("  Note              : discarded samples are skipped; calibration still runs if enough samples remain")
     for index, sample in enumerate(samples, start=1):
+        print(f"Reviewing sample {index}/{len(samples)}; kept={len(kept)}")
         left = draw_detection(sample.left_image, pattern_size, sample.left_points, True)
         right = draw_detection(sample.right_image, pattern_size, sample.right_points, True)
         preview = side_by_side(left, right, f"Sample {index} left", f"Sample {index} right")
@@ -180,10 +255,13 @@ def review_samples(samples: list[CalibrationSample], pattern_size: tuple[int, in
             key = cv.waitKey(0) & 0xFF
             if key in (ord(" "), ord("k"), 13):
                 kept.append(sample)
+                print(f"Kept sample {index}/{len(samples)}; kept={len(kept)}")
                 break
             if key == ord("d"):
+                print(f"Discarded sample {index}/{len(samples)}; kept={len(kept)}")
                 break
             if key == 27:
+                print(f"Stopped review at sample {index}/{len(samples)}; kept={len(kept)}")
                 cv.destroyWindow("Review calibration samples")
                 return kept
     cv.destroyWindow("Review calibration samples")
@@ -338,8 +416,8 @@ def calibrate(samples: list[CalibrationSample], image_size: tuple[int, int], arg
 
 def main() -> None:
     args = parse_args()
-    if args.min_detections < 3:
-        raise RuntimeError("--min-detections should be at least 3")
+    if args.min_detections < MIN_CALIBRATION_SAMPLES:
+        raise RuntimeError(f"--min-detections should be at least {MIN_CALIBRATION_SAMPLES}")
 
     pair = open_stereo_cameras(args.left, args.right)
     left_accumulator, right_accumulator = create_stereo_accumulators(pair, args)
@@ -354,6 +432,10 @@ def main() -> None:
     coverage_right = None
     consecutive = 0
     last_sample_time = 0.0
+    last_detection_time = -1.0e9
+    last_detection_ms = 0
+    last_left_ok = False
+    last_right_ok = False
     aborted = False
 
     cv.namedWindow(args.window_name, cv.WINDOW_NORMAL)
@@ -361,6 +443,7 @@ def main() -> None:
 
     def callback(left_events, right_events) -> None:
         nonlocal coverage_left, coverage_right, consecutive, last_sample_time
+        nonlocal last_detection_time, last_detection_ms, last_left_ok, last_right_ok
         left_accumulator.accept(left_events)
         right_accumulator.accept(right_events)
         left_image = frame_image(left_accumulator.generateFrame()).copy()
@@ -373,36 +456,64 @@ def main() -> None:
             coverage_left = np.zeros(left_image.shape[:2], dtype=np.uint8)
             coverage_right = np.zeros(right_image.shape[:2], dtype=np.uint8)
 
-        left_ok, left_points = detect_pattern(left_image, args.pattern, args.pattern_size)
-        right_ok, right_points = detect_pattern(right_image, args.pattern, args.pattern_size)
-
-        if left_ok and right_ok:
-            consecutive += 1
-        else:
-            consecutive = 0
-
         now = time.monotonic()
-        if (
-            left_ok
-            and right_ok
-            and consecutive >= args.consecutive_detections
-            and len(samples) < args.min_detections
-            and now - last_sample_time >= args.sample_cooldown_sec
-        ):
-            samples.append(
-                CalibrationSample(
-                    object_points=object_points_template.copy(),
-                    left_points=left_points.copy(),
-                    right_points=right_points.copy(),
-                    left_image=left_image,
-                    right_image=right_image,
-                )
+        detection_interval = args.detection_interval_ms / 1000.0
+        run_detection = now - last_detection_time >= detection_interval
+        left_ok = last_left_ok
+        right_ok = last_right_ok
+        left_points = None
+        right_points = None
+        detection_label = f"skip last={last_detection_ms}ms"
+
+        if run_detection:
+            detection_started = time.monotonic()
+            left_ok, left_points = detect_pattern(
+                left_image,
+                args.pattern,
+                args.pattern_size,
+                detector=args.detector,
+                detection_scale=args.detection_scale,
             )
-            add_coverage(coverage_left, left_points)
-            add_coverage(coverage_right, right_points)
-            last_sample_time = now
-            consecutive = 0
-            print(f"Collected calibration sample {len(samples)}/{args.min_detections}")
+            right_ok, right_points = detect_pattern(
+                right_image,
+                args.pattern,
+                args.pattern_size,
+                detector=args.detector,
+                detection_scale=args.detection_scale,
+            )
+            detection_finished = time.monotonic()
+            last_detection_time = detection_finished
+            last_detection_ms = int((detection_finished - detection_started) * 1000.0)
+            last_left_ok = left_ok
+            last_right_ok = right_ok
+            detection_label = f"{last_detection_ms}ms"
+
+            if left_ok and right_ok:
+                consecutive += 1
+            else:
+                consecutive = 0
+
+            if (
+                left_ok
+                and right_ok
+                and consecutive >= args.consecutive_detections
+                and len(samples) < args.min_detections
+                and now - last_sample_time >= args.sample_cooldown_sec
+            ):
+                samples.append(
+                    CalibrationSample(
+                        object_points=object_points_template.copy(),
+                        left_points=left_points.copy(),
+                        right_points=right_points.copy(),
+                        left_image=left_image,
+                        right_image=right_image,
+                    )
+                )
+                add_coverage(coverage_left, left_points)
+                add_coverage(coverage_right, right_points)
+                last_sample_time = now
+                consecutive = 0
+                print(f"Collected calibration sample {len(samples)}/{args.min_detections}")
 
         left_preview = draw_detection(overlay_coverage(left_image, coverage_left), args.pattern_size, left_points, left_ok)
         right_preview = draw_detection(overlay_coverage(right_image, coverage_right), args.pattern_size, right_points, right_ok)
@@ -410,7 +521,7 @@ def main() -> None:
             left_preview,
             right_preview,
             f"Left detected={left_ok}",
-            f"Right detected={right_ok} samples={len(samples)}/{args.min_detections}",
+            f"Right detected={right_ok} samples={len(samples)}/{args.min_detections} detect={detection_label}",
         )
         cv.imshow(args.window_name, preview)
 
@@ -427,10 +538,23 @@ def main() -> None:
         print(f"Calibration aborted with {len(samples)} collected samples")
         return
 
+    collected_samples = len(samples)
     if not args.no_review:
         samples = review_samples(samples, args.pattern_size)
+        discarded_samples = collected_samples - len(samples)
+        if discarded_samples > 0:
+            print(f"Discarded {discarded_samples} sample(s); calibrating with {len(samples)} kept sample(s)")
+        if len(samples) < MIN_CALIBRATION_SAMPLES:
+            raise RuntimeError(
+                f"Only {len(samples)} samples kept after review; "
+                f"at least {MIN_CALIBRATION_SAMPLES} samples are required"
+            )
         if len(samples) < args.min_detections:
-            raise RuntimeError(f"Only {len(samples)} samples kept after review; rerun calibration or use --no-review")
+            print(
+                "WARNING: Calibration is running with fewer samples than --min-detections "
+                f"({len(samples)}/{args.min_detections}). "
+                "The result may be less stable; check summary.json errors and collect more samples if needed."
+            )
 
     image_size = (samples[0].left_image.shape[1], samples[0].left_image.shape[0])
     summary = calibrate(samples, image_size, args, pair)
