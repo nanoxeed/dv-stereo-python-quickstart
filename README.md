@@ -106,14 +106,47 @@ uv run python stereo_pointcloud_rerun.py --calibration calibration/stereo_calibr
 
 `dv.SemiDenseStereoMatcher` で disparity/depth を推定し、左右 accumulated image、disparity preview、点群を Rerun に表示します。Open3D は使っていません。
 
+リアルタイム確認が重くなりにくいように、デフォルトでは 100ms 間隔で処理し、画像と点群は2フレームに1回 Rerun へ送ります。Rerun 側の履歴もメモリ上限を設定して起動します。
+
 よく使うオプション:
 
 ```bash
 uv run python stereo_pointcloud_rerun.py \
   --calibration calibration/stereo_calibration.json \
   --max-depth-m 3.0 \
-  --max-points 80000
+  --max-points 40000
 ```
+
+まだ重い場合は、イベント数、点群数、Rerun への送信頻度を下げてください。
+
+```bash
+uv run python stereo_pointcloud_rerun.py \
+  --calibration calibration/stereo_calibration.json \
+  --interval-ms 150 \
+  --event-count 30000 \
+  --max-points 15000 \
+  --pointcloud-interval 3 \
+  --image-interval 3
+```
+
+disparity が細かく分断される、または点群がまとまらない場合は、まず `calibration/summary.json` の `mean_epipolar_error` を確認してください。1px を超えている場合は、点群用途ではキャリブレーション精度が不足している可能性があります。
+
+近距離の手などは左右カメラで見え方が大きく変わり、平行な指のエッジも多いため誤対応が出やすいです。最初は、両方のカメラに十分写る距離で、平面に近くエッジの少ない物体をゆっくり動かして確認してください。
+
+マッチングが不安定な場合は、disparity の後処理とイベント蓄積を調整します。
+
+```bash
+uv run python stereo_pointcloud_rerun.py \
+  --calibration calibration/stereo_calibration.json \
+  --event-count 15000 \
+  --min-disparity 2.0 \
+  --max-depth-m 2.0 \
+  --median-filter-size 5 \
+  --speckle-size 200 \
+  --speckle-diff 1.0
+```
+
+polarity を保ったほうがエッジ対応が安定する場合は、`--use-polarity` も試してください。
 
 ## カメラ選択
 
