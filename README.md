@@ -36,18 +36,6 @@ uv run python accumulate_stereo_preview.py --accumulator generic --contribution 
 
 終了するには `Esc` を押します。
 
-### ステレオ画像の保存
-
-```bash
-uv run python capture_stereo_images.py --count 5
-```
-
-`Space` または `s` を押すと、現在の左右 accumulated image を保存します。キャリブレーションファイルを指定した場合は、rectified image も保存します。
-
-```bash
-uv run python capture_stereo_images.py --calibration calibration/stereo_calibration.json
-```
-
 ### ステレオキャリブレーション
 
 キャリブレーション用チェスボードは `assets/calibration/` にあります。
@@ -56,110 +44,23 @@ uv run python capture_stereo_images.py --calibration calibration/stereo_calibrat
 - `chessboard_9x6_30mm_300dpi.png`: 300dpi の PNG 版です。
 
 ```bash
-uv run python stereo_calibrate.py --pattern chessboard --pattern-size 8x5 --square-size 30
+uv run python stereo_calibrate.py --detector sb
 ```
 
-`--pattern-size` は OpenCV が検出する点数です。`9x6` squares のチェスボードでは、内側コーナー数として `8x5` を指定します。
+スクリプトが開始されると、左右のカメラ画像が表示されます。
+両方のカメラでチェスボードが検出され、マッチングが取れたら自動的に画像がストアされていきます。
+20枚ストアが溜まったところで、一旦撮影が終了し、どの画像を採用するかの確認を行います。
 
-`--square-size` はデフォルトではミリメートルとして扱い、dv-processing の depth geometry 用に内部でメートルへ変換します。最初からメートルで指定したい場合は `--square-size-scale-to-meters 1.0` を追加してください。
+確認では以下のキーで採用を決めます。
+- `Space` または `k` を押すと、現在の画像を採用します。
+- `d` を押すと、現在の画像を棄却します。
 
-検出が重くて画面更新が遅い場合は、まず標準 detector と縮小検出を使ってください。これがデフォルトです。
-
-```bash
-uv run python stereo_calibrate.py \
-  --pattern chessboard \
-  --pattern-size 8x5 \
-  --square-size 30
-```
-
-標準 detector で検出できない場合だけ、遅くなりますが `--detector sb` または `--detector both` を試してください。
-まだ重い場合は、`--detection-scale 0.5` や `--detection-interval-ms 500` のように検出解像度と検出頻度を下げてください。反対に、チェスボードが小さく写っていて反応しない場合は `--detection-scale 1.0` のまま使い、ボードを大きく写してください。
-
-キャリブレーションでは polarity を使う設定がデフォルトです。必要な場合だけ `--ignore-polarity` で正負イベントを同一扱いにできます。
-
-SVG を印刷するときは、100% スケールで印刷し、`fit to page` や「用紙に合わせる」設定は無効にしてください。
-
-このスクリプトは DV-GUI のキャリブレーションと同じ考え方で動きます。
-
-- 2台のカメラを同期する
-- イベントを accumulated image に変換する
-- 左右画像でキャリブレーションパターンを検出する
-- 連続フレームで安定して検出されたサンプルだけを保持する
-- 必要に応じてサンプルを目視確認する
-- OpenCV の mono calibration と stereo calibration を実行する
-- `calibration/stereo_calibration.json` を dv-processing 用に保存する
-- `calibration/opencv_calibration.npz` を OpenCV での検証用に保存する
-
-対応パターン:
-
-```bash
---pattern chessboard
---pattern circles
---pattern asymmetric-circles
-```
+終了すると、キャリブレーション結果が `calibration/stereo_calibration.json` に保存されます。
 
 ### Rerun 点群ビューア
+
+キャリブレーション結果を用いて、Disparity画像と点群を表示します。
 
 ```bash
 uv run python stereo_pointcloud_rerun.py --calibration calibration/stereo_calibration.json
 ```
-
-`dv.SemiDenseStereoMatcher` で disparity/depth を推定し、左右 accumulated image、disparity preview、点群を Rerun に表示します。Open3D は使っていません。
-
-リアルタイム確認が重くなりにくいように、デフォルトでは 100ms 間隔で処理し、画像と点群は2フレームに1回 Rerun へ送ります。Rerun 側の履歴もメモリ上限を設定して起動します。
-
-よく使うオプション:
-
-```bash
-uv run python stereo_pointcloud_rerun.py \
-  --calibration calibration/stereo_calibration.json \
-  --max-depth-m 3.0 \
-  --max-points 40000
-```
-
-まだ重い場合は、イベント数、点群数、Rerun への送信頻度を下げてください。
-
-```bash
-uv run python stereo_pointcloud_rerun.py \
-  --calibration calibration/stereo_calibration.json \
-  --interval-ms 150 \
-  --event-count 30000 \
-  --max-points 15000 \
-  --pointcloud-interval 3 \
-  --image-interval 3
-```
-
-disparity が細かく分断される、または点群がまとまらない場合は、まず `calibration/summary.json` の `mean_epipolar_error` を確認してください。1px を超えている場合は、点群用途ではキャリブレーション精度が不足している可能性があります。
-
-近距離の手などは左右カメラで見え方が大きく変わり、平行な指のエッジも多いため誤対応が出やすいです。最初は、両方のカメラに十分写る距離で、平面に近くエッジの少ない物体をゆっくり動かして確認してください。
-
-マッチングが不安定な場合は、disparity の後処理とイベント蓄積を調整します。
-
-```bash
-uv run python stereo_pointcloud_rerun.py \
-  --calibration calibration/stereo_calibration.json \
-  --event-count 15000 \
-  --min-disparity 2.0 \
-  --max-depth-m 2.0 \
-  --median-filter-size 5 \
-  --speckle-size 200 \
-  --speckle-diff 1.0
-```
-
-polarity を保ったほうがエッジ対応が安定する場合は、`--use-polarity` も試してください。
-
-## カメラ選択
-
-多くのスクリプトでは、左右カメラを discovery index で指定できます。
-
-```bash
---left 0 --right 1
-```
-
-カメラ名で指定することもできます。
-
-```bash
---left DVXplorer_DXA00000 --right DVXplorer_DXA00001
-```
-
-点群ビューアは、キャリブレーションファイルに保存されたカメラ名を使ってカメラを開きます。これにより、キャリブレーションした個体とライブ接続中の個体が一致するようにしています。
