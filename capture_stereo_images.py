@@ -43,12 +43,24 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    pair = open_stereo_cameras(args.left, args.right)
-    left_accumulator, right_accumulator = create_stereo_accumulators(pair, args)
-
     stereo_geometry = None
+    calibration = None
     if args.calibration is not None:
-        _, stereo_geometry = stereo_geometry_from_file(args.calibration, args.left_designation, args.right_designation)
+        calibration, stereo_geometry = stereo_geometry_from_file(
+            args.calibration, args.left_designation, args.right_designation
+        )
+
+    if calibration is not None:
+        # Open by the calibration's left/right names so the LEFT/RIGHT rectification maps are
+        # applied to the matching cameras even if USB enumeration order differs from
+        # calibration time (otherwise the *_rectified.png pair can come out swapped).
+        pair = open_stereo_cameras(
+            args.left or calibration.left.name,
+            args.right or calibration.right.name,
+        )
+    else:
+        pair = open_stereo_cameras(args.left, args.right)
+    left_accumulator, right_accumulator = create_stereo_accumulators(pair, args)
 
     latest_left = None
     latest_right = None

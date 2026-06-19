@@ -215,6 +215,11 @@ def print_calibration_quality_hint(calibration_file: Path) -> None:
             "WARNING: Calibration error is high for dense stereo. "
             "If disparity looks fragmented, recalibrate with more varied board poses and better corner coverage."
         )
+    if summary.get("left_right_order_ok") is False:
+        print(
+            "WARNING: Calibration reports Left/Right may be reversed; disparity could be near zero "
+            "and depth wrong. Recalibrate with the physically-left camera as left/C0."
+        )
 
 
 def opencv_calibration_path(args: argparse.Namespace) -> Path:

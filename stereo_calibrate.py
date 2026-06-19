@@ -297,6 +297,17 @@ def epipolar_error(left_points, right_points, fundamental: np.ndarray) -> float:
     return total / count
 
 
+def left_right_order_ok(proj_right: np.ndarray) -> bool:
+    """Return True if the rectified pair has the standard left/right ordering.
+
+    After stereoRectify, proj_right[0, 3] equals Tx * f (the rectified baseline times the
+    focal length). For a correctly ordered pair (the physically-left camera as left/C0) this
+    is negative; a positive value means the two cameras are swapped, which makes SGBM
+    disparity come out near zero and depth wrong.
+    """
+    return float(proj_right[0, 3]) < 0.0
+
+
 def calibrate(samples: list[CalibrationSample], image_size: tuple[int, int], args: argparse.Namespace, pair) -> dict:
     object_points = [sample.object_points for sample in samples]
     left_points = [sample.left_points for sample in samples]
@@ -399,6 +410,8 @@ def calibrate(samples: list[CalibrationSample], image_size: tuple[int, int], arg
         "left_reprojection_error": float(left_error),
         "right_reprojection_error": float(right_error),
         "mean_epipolar_error": float(stereo_epipolar_error),
+        "baseline_m": float(np.linalg.norm(translation)),
+        "left_right_order_ok": bool(left_right_order_ok(proj_right)),
         "dv_calibration": str(dv_file),
         "opencv_calibration": str(args.output_dir / "opencv_calibration.npz"),
     }
@@ -565,6 +578,13 @@ def main() -> None:
         and summary["mean_epipolar_error"] <= args.max_epipolar_error
     )
     print(json.dumps(summary, indent=2))
+    if not summary["left_right_order_ok"]:
+        print(
+            "WARNING: Left/Right cameras appear REVERSED (rectified baseline is positive). "
+            "SGBM disparity will be near zero and depth will be wrong. "
+            "Physically swap the two cameras (or swap --left/--right so the physically-left "
+            "camera is left/C0) and recalibrate."
+        )
     if not passed:
         message = "Calibration completed, but one or more error limits were exceeded"
         if args.enforce_error_limits:
